@@ -150,6 +150,90 @@ def MiyamotoNagai_hessian(x, y, z, params):
     hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
     return hess_phi
 
+# ---------- MN3ExpDisk ----------
+@jax.jit
+def MN3ExpDisk_potential(x, y, z, params):
+    '''
+    params: dict with keys 'logM', 'Rs', 'Hs', 'sech2_z', 'positive_density', 'x_origin', 'y_origin', 'z_origin', 'dirx', 'diry', 'dirz'
+    '''
+    hzR = params['Hs']/params['Rs']
+    sech2_z = params['sech2_z']
+    positive_density = params['positive_density']
+    m = 10**params['logM']
+
+    _K_pos_dens = jnp.array(
+        [
+            [0.0036, -0.0330, 0.1117, -0.1335, 0.1749],
+            [-0.0131, 0.1090, -0.3035, 0.2921, -5.7976],
+            [-0.0048, 0.0454, -0.1425, 0.1012, 6.7120],
+            [-0.0158, 0.0993, -0.2070, -0.7089, 0.6445],
+            [-0.0319, 0.1514, -0.1279, -0.9325, 2.6836],
+            [-0.0326, 0.1816, -0.2943, -0.6329, 2.3193],
+        ]
+    )
+    _K_neg_dens = jnp.array(
+        [
+            [-0.0090, 0.0640, -0.1653, 0.1164, 1.9487],
+            [0.0173, -0.0903, 0.0877, 0.2029, -1.3077],
+            [-0.0051, 0.0287, -0.0361, -0.0544, 0.2242],
+            [-0.0358, 0.2610, -0.6987, -0.1193, 2.0074],
+            [-0.0830, 0.4992, -0.7967, -1.2966, 4.4441],
+            [-0.0247, 0.1718, -0.4124, -0.5944, 0.7333],
+        ]
+    )
+    K = jnp.where(positive_density, _K_pos_dens, _K_neg_dens)
+    b_hR = jnp.where(sech2_z, -0.033 * hzR**3 + 0.262 * hzR**2 + 0.659 * hzR, -0.269 * hzR**3 + 1.08 * hzR**2 + 1.092 * hzR)
+    vander_vec = jnp.vander(jnp.array([b_hR]), N=5)[0]
+    param_vec = K @ vander_vec
+
+    _ms = param_vec[:3] * m
+    _as = param_vec[3:] * params['Rs']
+    _b = b_hR * params['Rs']
+    _b = jnp.broadcast_to(_b, _ms.shape)
+
+
+    c_only = {}
+    for i in range(3):
+        c_only[f"m{i + 1}"] = _ms[i]
+        c_only[f"a{i + 1}"] = _as[i]
+        c_only[f"b{i + 1}"] = _b
+    
+    def call_mn(xx, yy, zz, mi, a, b, params):
+        sign = jnp.sign(mi)
+        abs_m = jnp.abs(mi) + EPSILON
+        params_mn = {
+            'logM': jnp.log10(abs_m),
+            'Rs': a,
+            'Hs': b,
+            'x_origin': params['x_origin'],
+            'y_origin': params['y_origin'],
+            'z_origin': params['z_origin'],
+            'dirx': params['dirx'],
+            'diry': params['diry'],
+            'dirz': params['dirz'],
+        }
+        return sign * MiyamotoNagai_potential(xx, yy, zz, params_mn)
+
+    return jax.vmap(lambda m, a, b: call_mn(x, y, z, m, a, b, params))(
+            _ms, _as, _b
+        ).sum(axis=0)
+
+@jax.jit
+def MN3ExpDisk_acceleration(x, y, z, params):
+    def potential_vec(pos):
+        return MN3ExpDisk_potential(pos[0], pos[1], pos[2], params)
+    grad_phi = jax.grad(potential_vec)(jnp.array([x, y, z]))
+    return -grad_phi
+
+@jax.jit
+def MN3ExpDisk_hessian(x, y, z, params):
+    def potential_vec(pos):
+        return MN3ExpDisk_potential(pos[0], pos[1], pos[2], params)
+    hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
+    return hess_phi
+
+
+
 # ---------- Quadratic Bar ----------
 # Phi = A * Rs^3 * (R^2 / (Rs + R)^5) * cos(2*phi_bar) * exp(-|z|/Hs)
 # where phi_bar = phi - Omega*(t - t0)
@@ -291,6 +375,9 @@ def ExpDisk_hessian(x, y, z, params):
     hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
     return hess_phi
 
+
+
+
 # ---------- NFW + MiyamotoNagai ----------
 # Composite potential: Phi = Phi_NFW + Phi_MiyamotoNagai
 @jax.jit
@@ -313,5 +400,58 @@ def NFW_MiyamotoNagai_acceleration(x, y, z, params):
 def NFW_MiyamotoNagai_hessian(x, y, z, params):
     def potential_vec(pos):
         return NFW_MiyamotoNagai_potential(pos[0], pos[1], pos[2], params)
+    hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
+    return hess_phi
+
+
+#---------- MilkyWayPotential2022 ----------
+@jax.jit
+def MW2022_potential(x, y, z, params):
+    '''
+    params: dict with keys 'halo_params', 'disk_params', 'bulge_params', each being a dict of parameters for the respective potentials
+    '''
+    phi_halo = NFW_potential(x, y, z, params['halo_params'])
+    phi_disk = MN3ExpDisk_potential(x, y, z, params['disk_params'])
+    phi_bulge = Hernquist_potential(x, y, z, params['bulge_params'])
+    phi_nucleus = Hernquist_potential(x, y, z, params['nucleus_params'])
+    return phi_halo + phi_disk + phi_bulge + phi_nucleus
+
+@jax.jit
+def MW2022_acceleration(x, y, z, params):
+    def potential_vec(pos):
+        return MW2022_potential(pos[0], pos[1], pos[2], params)
+    grad_phi = jax.grad(potential_vec)(jnp.array([x, y, z]))
+    return -grad_phi
+
+@jax.jit
+def MW2022_hessian(x, y, z, params):
+    def potential_vec(pos):
+        return MW2022_potential(pos[0], pos[1], pos[2], params)
+    hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
+    return hess_phi
+
+# ---------- Bowy2014 ----------
+# Composite potential: Phi = Phi_NFW + Phi_MiyamotoNagai
+@jax.jit
+def MW2014_potential(x, y, z, params):
+    '''
+    params: dict with keys 'NFW_params' and 'MN_params', each being a dict of parameters for the respective potentials
+    '''
+    phi_nfw = NFW_potential(x, y, z, params['halo_params'])
+    phi_mn  = MiyamotoNagai_potential(x, y, z, params['disk_params'])
+    phi_bulge = Hernquist_potential(x, y, z, params['bulge_params'])
+    return phi_nfw + phi_mn + phi_bulge
+
+@jax.jit
+def MW2014_acceleration(x, y, z, params):
+    def potential_vec(pos):
+        return MW2014_potential(pos[0], pos[1], pos[2], params)
+    grad_phi = jax.grad(potential_vec)(jnp.array([x, y, z]))
+    return -grad_phi
+
+@jax.jit
+def MW2014_hessian(x, y, z, params):
+    def potential_vec(pos):
+        return MW2014_potential(pos[0], pos[1], pos[2], params)
     hess_phi = jax.hessian(potential_vec)(jnp.array([x, y, z]))
     return hess_phi

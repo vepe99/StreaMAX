@@ -35,6 +35,9 @@ def generate_stream(xv_f,
     elif type_host == 'MiyamotoNagai':
         acc_host = MiyamotoNagai_acceleration
         hessian_host = MiyamotoNagai_hessian
+    elif type_host == '3MNExpDisk':
+        acc_host = MN3ExpDisk_acceleration
+        hessian_host = MN3ExpDisk_hessian
     elif type_host == 'Logarithmic':
         acc_host = Logarithmic_acceleration
         hessian_host = Logarithmic_hessian
@@ -53,6 +56,12 @@ def generate_stream(xv_f,
     elif type_host == 'DiskNFW':
         acc_host = NFW_MiyamotoNagai_acceleration
         hessian_host = NFW_MiyamotoNagai_hessian
+    elif type_host == 'MW2022':
+        acc_host = MW2022_acceleration
+        hessian_host = MW2022_hessian
+    elif type_host == 'MW2014':
+        acc_host = MW2014_acceleration
+        hessian_host = MW2014_hessian
     elif type_host == 'Composite':
         # TODO: implement composite potential selection
         raise NotImplementedError("Composite potential not yet implemented.")
